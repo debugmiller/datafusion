@@ -65,7 +65,8 @@ use datafusion_expr::registry::{
 };
 use datafusion_expr::simplify::SimplifyContext;
 use datafusion_expr::{
-    AggregateUDF, Explain, Expr, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF,
+    AggregateUDF, Explain, Expr, HigherOrderUDF, LogicalPlan, ScalarUDF, Signature,
+    WindowUDF,
 };
 use datafusion_optimizer::simplify_expressions::ExprSimplifier;
 use datafusion_optimizer::{
@@ -2038,6 +2039,13 @@ impl ContextProvider for SessionContextProvider<'_> {
             name, schema,
         ));
         Ok(provider_as_source(table))
+    }
+
+    fn get_table_function_signature(&self, name: &str) -> Option<Signature> {
+        self.state
+            .table_functions
+            .get(name)
+            .and_then(|f| f.signature().cloned())
     }
 
     fn get_function_meta(&self, name: &str) -> Option<Arc<ScalarUDF>> {

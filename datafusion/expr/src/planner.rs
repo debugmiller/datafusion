@@ -24,8 +24,8 @@ use crate::expr::NullTreatment;
 #[cfg(feature = "sql")]
 use crate::logical_plan::LogicalPlan;
 use crate::{
-    AggregateUDF, Expr, GetFieldAccess, HigherOrderUDF, ScalarUDF, SortExpr, TableSource,
-    WindowFrame, WindowFunctionDefinition, WindowUDF,
+    AggregateUDF, Expr, GetFieldAccess, HigherOrderUDF, ScalarUDF, Signature, SortExpr,
+    TableSource, WindowFrame, WindowFunctionDefinition, WindowUDF,
 };
 use arrow::datatypes::{DataType, Field, FieldRef, SchemaRef};
 use datafusion_common::datatype::DataTypeExt;
@@ -59,6 +59,15 @@ pub trait ContextProvider {
         _args: Vec<Expr>,
     ) -> Result<Arc<dyn TableSource>> {
         not_impl_err!("Table Functions are not supported")
+    }
+
+    /// The [`Signature`] of the table function `name`, if it declares one.
+    ///
+    /// Its parameter names let the function be called with named arguments
+    /// (`FROM f(a => 1)`): the SQL planner reorders them to positions before
+    /// calling [`Self::get_table_function_source`].
+    fn get_table_function_signature(&self, _name: &str) -> Option<Signature> {
+        None
     }
 
     /// Provides an intermediate table that is used to expose a recursive CTE

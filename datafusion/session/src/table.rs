@@ -25,8 +25,8 @@ use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use datafusion_common::{Constraints, Statistics, not_impl_err};
 use datafusion_common::{DFSchemaRef, Result, internal_err};
-use datafusion_expr::Expr;
 use datafusion_expr::statistics::StatisticsRequest;
+use datafusion_expr::{Expr, Signature};
 
 use datafusion_expr::dml::{InsertOp, MergeIntoClause};
 use datafusion_expr::{
@@ -615,6 +615,22 @@ pub trait TableFunctionImpl: Debug + Sync + Send + Any {
         #[expect(deprecated)]
         self.call(args.exprs)
     }
+
+    /// The function's [`Signature`], if it declares one.
+    ///
+    /// Today only the signature's [`parameter_names`] are used: when they are
+    /// set, the function can be called with named arguments
+    /// (`SELECT * FROM f(a => 1, b => 2)`), which the SQL planner reorders to
+    /// the declared positions before calling [`Self::call_with_args`], as it
+    /// does for scalar, aggregate and window functions. Arguments are not
+    /// type checked against the signature.
+    ///
+    /// The default, `None`, accepts positional arguments only.
+    ///
+    /// [`parameter_names`]: Signature::parameter_names
+    fn signature(&self) -> Option<&Signature> {
+        None
+    }
 }
 
 /// A table that uses a function to generate data
@@ -640,6 +656,12 @@ impl TableFunction {
     /// Get the implementation of the table function
     pub fn function(&self) -> &Arc<dyn TableFunctionImpl> {
         &self.fun
+    }
+
+    /// The function's [`Signature`], if it declares one
+    /// (see [`TableFunctionImpl::signature`])
+    pub fn signature(&self) -> Option<&Signature> {
+        self.fun.signature()
     }
 
     /// Get the function implementation and generate a table

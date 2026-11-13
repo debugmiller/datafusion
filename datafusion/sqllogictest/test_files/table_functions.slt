@@ -624,7 +624,9 @@ LIMIT 10;
 # rather than being silently dropped (which previously caused a misleading
 # "requires 1 to 3 arguments" error instead)
 
-statement error DataFusion error: Error during planning: Unsupported function argument type: start => 1
+# Named arguments reach only a table function whose signature names its
+# parameters; generate_series names none.
+statement error DataFusion error: Error during planning: Table function 'generate_series' does not support named arguments
 SELECT * FROM generate_series(start => 1, stop => 5)
 
 statement error DataFusion error: Error during planning: Unsupported function argument type: \*

@@ -23,13 +23,16 @@ use datafusion_common::tree_node::{Transformed, TreeNode};
 use datafusion_common::{
     DFSchema, Diagnostic, Result, Span, Spans, TableReference, not_impl_err, plan_err,
 };
+use datafusion_expr::arguments::{ArgumentName, resolve_function_arguments};
 use datafusion_expr::builder::subquery_alias;
 use datafusion_expr::planner::{
     PlannedRelation, RelationPlannerContext, RelationPlanning,
 };
 use datafusion_expr::{Expr, LogicalPlan, LogicalPlanBuilder, expr::Unnest};
 use datafusion_expr::{Subquery, SubqueryAlias};
-use sqlparser::ast::{FunctionArg, FunctionArgExpr, Spanned, TableFactor};
+use sqlparser::ast::{
+    Expr as SQLExpr, FunctionArg, FunctionArgExpr, Spanned, TableFactor,
+};
 
 mod join;
 
@@ -155,22 +158,12 @@ impl<S: ContextProvider> SqlToRel<'_, S> {
                 if let Some(func_args) = args {
                     let tbl_func_name =
                         name.0.first().unwrap().as_ident().unwrap().to_string();
-                    let args = func_args
-                        .args
-                        .into_iter()
-                        .map(|arg| {
-                            if let FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) = arg
-                            {
-                                self.sql_expr_to_logical_expr(
-                                    expr,
-                                    &DFSchema::empty(),
-                                    planner_context,
-                                )
-                            } else {
-                                plan_err!("Unsupported function argument type: {}", arg)
-                            }
-                        })
-                        .collect::<Result<Vec<_>>>()?;
+                    let args = self.table_function_args(
+                        &tbl_func_name,
+                        func_args.args,
+                        &DFSchema::empty(),
+                        planner_context,
+                    )?;
                     let provider = self
                         .context_provider
                         .get_table_function_source(&tbl_func_name, args)?;
@@ -273,19 +266,12 @@ impl<S: ContextProvider> SqlToRel<'_, S> {
                     .last()
                     .cloned()
                     .unwrap_or_else(|| Arc::new(DFSchema::empty()));
-                let func_args = args
-                    .into_iter()
-                    .map(|arg| match arg {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))
-                        | FunctionArg::Named {
-                            arg: FunctionArgExpr::Expr(expr),
-                            ..
-                        } => {
-                            self.sql_expr_to_logical_expr(expr, &schema, planner_context)
-                        }
-                        _ => plan_err!("Unsupported function argument: {arg:?}"),
-                    })
-                    .collect::<Result<Vec<Expr>>>()?;
+                let func_args = self.table_function_args(
+                    tbl_func_ref.table(),
+                    args,
+                    &schema,
+                    planner_context,
+                )?;
                 let provider = self
                     .context_provider
                     .get_table_function_source(tbl_func_ref.table(), func_args)?;
@@ -302,6 +288,62 @@ impl<S: ContextProvider> SqlToRel<'_, S> {
             }
         };
         Ok(PlannedRelation::new(plan, alias))
+    }
+
+    /// Plans a table function's arguments, in the order of its parameters.
+    ///
+    /// Named arguments (`f(a => 1)`) are reordered to the positions the
+    /// function's [`Signature`] names, as for scalar functions; a function
+    /// that declares no parameter names refuses them. Positional arguments are
+    /// passed as written.
+    ///
+    /// [`Signature`]: datafusion_expr::Signature
+    fn table_function_args(
+        &self,
+        func_name: &str,
+        args: Vec<FunctionArg>,
+        schema: &DFSchema,
+        planner_context: &mut PlannerContext,
+    ) -> Result<Vec<Expr>> {
+        let mut exprs = Vec::with_capacity(args.len());
+        let mut names = Vec::with_capacity(args.len());
+        for arg in args {
+            let (expr, name) = match arg {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => (expr, None),
+                FunctionArg::Named {
+                    name,
+                    arg: FunctionArgExpr::Expr(expr),
+                    ..
+                }
+                | FunctionArg::ExprNamed {
+                    name: SQLExpr::Identifier(name),
+                    arg: FunctionArgExpr::Expr(expr),
+                    ..
+                } => (
+                    expr,
+                    Some(ArgumentName {
+                        value: name.value,
+                        is_quoted: name.quote_style.is_some(),
+                    }),
+                ),
+                _ => return plan_err!("Unsupported function argument type: {arg}"),
+            };
+            exprs.push(self.sql_expr_to_logical_expr(expr, schema, planner_context)?);
+            names.push(name);
+        }
+        if names.iter().all(Option::is_none) {
+            return Ok(exprs);
+        }
+        let Some(param_names) = self
+            .context_provider
+            .get_table_function_signature(func_name)
+            .and_then(|signature| signature.parameter_names)
+        else {
+            return plan_err!(
+                "Table function '{func_name}' does not support named arguments"
+            );
+        };
+        resolve_function_arguments(&param_names, exprs, names)
     }
 
     pub(crate) fn create_relation_subquery(
